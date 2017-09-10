@@ -1,0 +1,93 @@
+clear
+figure
+f = cart_pendulum_gen;
+nx = 2;
+nu = 1  ;
+C = [1 0];
+D = zeros(1,2 + 2 + 1); % p x (m + n + 1)
+xmin = [-.1 -2];
+xmax = [.1 2];
+umin = -15;
+umax = 15;
+xv = cell(1,nx);
+uv = cell(1,nu);
+XmeshSize = [8 8];
+UmeshSize = [2];
+for i = 1:nx
+    xv{i} = linspace(xmin(i),xmax(i),XmeshSize(i));
+end
+for i = 1:nu
+    uv{i} = linspace(umin,umax,UmeshSize(i));
+end
+pwa_container = pwa_estimator( f, xv, uv, C, D, 'l' );
+A = pwa_container{1}.A;
+B = pwa_container{1}.Bu;
+
+[TT,AA,BB] = controlCanon(A,B);
+% TT = [1 0;1 0.1];
+% TT = eye(2);
+% theta = 40;
+% TT = [cos(theta) -sin(theta);sin(theta) cos(theta)];
+T = TT^-1; 
+xv = cell(1,nx);
+for i = 1:nx
+    xmin_temp(i) = TT(i,:).*(TT(i,:)>0)*xmin' + TT(i,:).*(TT(i,:)<0)*xmax';
+    xmax_temp(i) = TT(i,:).*(TT(i,:)<0)*xmin' + TT(i,:).*(TT(i,:)>0)*xmax';
+end
+rat = 1;
+for i = 1:nx
+    xmin_temp2(i) = T(i,:).*(T(i,:)>0)*xmin_temp' + T(i,:).*(T(i,:)<0)*xmax_temp';
+    xmax_temp2(i) = T(i,:).*(T(i,:)<0)*xmin_temp' + T(i,:).*(T(i,:)>0)*xmax_temp';
+    rat = max(rat,(xmax_temp2(i)-xmin_temp2(i))/(xmax(i)-xmin(i)));
+end
+for i = 1:nx
+    center = (xmax_temp(i)+xmin_temp(i))/2;
+    diff = (xmax_temp(i)-xmin_temp(i))/2/rat;
+    xv{i} = linspace(center-diff,center+diff,XmeshSize(i));
+end
+ff = @(xT,u) TT*f(T*xT,u);
+pwa_container2 = pwa_estimator( ff, xv, uv, C*T, D, 'l' );
+%% drawing main nonlinear function
+PH = Polyhedron('V',[xmin(1) xmin(2);xmin(1) xmax(2);xmax(1) xmin(2);xmax(1) xmax(2)]);
+H = PH.H;
+SpecA = H(:,1:end-1);
+SpecB = H(:,end);
+pwa_container2{1}.ulim = [umin,umax];
+problem = safe_control_box(SpecA*T,SpecB,pwa_container2);
+problem = problem.Add_ConstraintEQ({{'Mu',[1,2]}},T(1,:),0);
+problem = problem.Add_ConstraintEQ({{'Mu',[1,2]}},T(2,:),0);
+solution = problem.getSol;
+plot(PH);
+hold on
+for i = 1:length(solution)
+    res(i) = solution{i,2};
+end
+Mu = res(2:3)';
+G = res(4:5)';
+resPH = Polyhedron('A',[eye(2);-eye(2)]*TT,'b',[Mu+G;-(Mu-G)]);
+plot(resPH,'color','green');
+[ controlled_sys, controller ] = Add_Controller(pwa_container2,solution);
+% axis([-1 1 -1 1])
+%% Getting a random point as initial state to evolve
+[X,Y] = ginput(1);
+state = TT*[X;Y];
+%% Plotting the evolution of the state
+nIter = 15;
+for i = 1:nIter
+    input(i) = eval_pwa(controller,0,state(:,end));
+    state = [state ff(state(:,end),input(i))];    
+%     state = [state eval_pwa(controlled_sys,state(:,end))];
+    realState = T*state(:,end-1);
+    plot(realState(1,:),realState(2,:),'Color',[ones(1,3)*i/nIter],'Marker','*');
+end
+for i = 1:XmeshSize(1)
+    newGrid = T*[xv{1}(i) xv{1}(i);xv{2}(1) xv{2}(end)];
+    plot(newGrid(1,:),newGrid(2,:),'k');
+end
+
+for i = 1:XmeshSize(2)
+    newGrid = T*[xv{1}(1) xv{1}(end);xv{2}(i) xv{2}(i)];
+    plot(newGrid(1,:),newGrid(2,:),'k');
+end
+
+legend('Specification','Invariant Box')
